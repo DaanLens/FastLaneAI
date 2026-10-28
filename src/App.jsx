@@ -5,7 +5,7 @@ import {
   getUser, getDeelnemer, saveDeelnemer,
   kansenSaver, loadKansen, kansPayload,
   toewijzingSaver, vanNaarSaver, loadRol, toewijzingPayload, vanNaarPayload,
-  loadActies, addActie, deleteActie, wipeAll,
+  loadActies, addActie, deleteActie, wipeAll, wordBeheerder, EIGEN_TAKEN, MIN_KANSEN, MAX_KANSEN,
 } from "./data.js";
 
 /* ---------- vaste gegevens ---------- */
@@ -42,9 +42,15 @@ const LEVELS = [
   { id: "samen", label: "Human + Agent", desc: "De agent maakt het, wij sturen bij en controleren" },
   { id: "human", label: "Human", desc: "Blijft aan ons" },
 ];
-const COLS = ["30 dagen", "90 dagen", "Dit jaar"];
-const COL_HINT = { "30 dagen": "Eerst klein beginnen", "90 dagen": "Pilot of proof of concept", "Dit jaar": "Structureel verankeren" };
-const COL_COLOR = { "30 dagen": "#2E90FA", "90 dagen": "#7A5AF8", "Dit jaar": "#12B76A" };
+const COLS = ["30 dagen", "90 dagen", "Volgend jaar"];
+const COL_HINT = { "30 dagen": "Eerst klein beginnen", "90 dagen": "Pilot of proof of concept", "Volgend jaar": "Structureel verankeren" };
+const COL_COLOR = { "30 dagen": "#2E90FA", "90 dagen": "#7A5AF8", "Volgend jaar": "#12B76A" };
+
+/* Vaste taken plus de ingevulde eigen taken (15-20) */
+const allTasks = (customs) => [
+  ...TASKS,
+  ...EIGEN_TAKEN.filter((nr) => customs?.[nr]?.t).map((nr) => ({ id: nr, fase: customs[nr].fase || "Build", t: customs[nr].t })),
+];
 
 /* ---------- opslag: Supabase (zie data.js) ---------- */
 const LS_KEY = "aifl-me";
@@ -141,10 +147,19 @@ function PageTitle({ title, sub }) {
 }
 
 /* ---------- start ---------- */
-function Start({ go, isBeheer }) {
+function Start({ go, isBeheer, showBeheer, onBeheer }) {
   const [sure, setSure] = useState(false);
   const [msg, setMsg] = useState("");
   const [code, setCode] = useState("");
+  const activeer = async () => {
+    setMsg("Bezig...");
+    try {
+      await wordBeheerder(code);
+      onBeheer(); setMsg("Je bent nu beheerder. Op het tabblad Pitch zie je alle teams.");
+    } catch (e) {
+      setMsg("Beheerder worden is niet gelukt: " + e.message);
+    }
+  };
   const wipe = async () => {
     setMsg("Bezig met wissen...");
     try {
@@ -156,9 +171,9 @@ function Start({ go, isBeheer }) {
     }
   };
   const steps = [
-    { tab: "kansen", t: "Kansen bij onze klanten", d: "Drie klanten, per klant een kans voor AI, Copilot of een agent.", m: "15 min" },
+    { tab: "kansen", t: "Kansen bij onze klanten", d: "Minstens drie klanten, per klant een kans voor AI, Copilot of een agent.", m: "15 min" },
     { tab: "rol", t: "Onze rol", d: "Sorteer de taken: wat doet de agent, wat de human? Vul daarna van ... naar ... in.", m: "15 min" },
-    { tab: "acties", t: "Mijn acties", d: "Zet je eigen acties op de gezamenlijke actiemuur.", m: "15 min" },
+    { tab: "acties", t: "Mijn acties", d: "Bepaal samen jullie acties voor 30 dagen, 90 dagen en volgend jaar.", m: "15 min" },
   ];
   return (
     <div className="p-4 space-y-5">
@@ -179,7 +194,7 @@ function Start({ go, isBeheer }) {
           </li>
         ))}
       </ol>
-      <p className="text-sm" style={{ color: MUTE }}>Daarna volgt de pitch per team (2 minuten plus 1 minuut vragen). Gebruik het tabblad Pitch om het scherm van een team te tonen.</p>
+      <p className="text-sm" style={{ color: MUTE }}>Daarna volgt de pitch per team (2 minuten plus 1 minuut vragen). Op het tabblad Pitch zien jullie alles wat je team heeft ingevuld, om de pitch voor te bereiden en op het grote scherm te tonen.</p>
 
       <div className="space-y-2">
         <Acc title="Frontier in 1 minuut">
@@ -226,9 +241,17 @@ function Start({ go, isBeheer }) {
           <p className="text-sm" style={{ color: MUTE }}>Bron: Info Support Agentic Engineering-onderzoek 2026, 330 Nederlandse IT-beslissers. Een door Info Support opgedragen onderzoek over softwareontwikkeling.</p>
         </Acc>
 
-        {isBeheer && <Acc title="Beheer (facilitator)">
-          <p className="text-sm" style={{ color: MUTE }}>Wist alle teamgegevens, acties en inschrijvingen, voor iedereen. Gebruik dit alleen na een test of aan het einde.</p>
+        {showBeheer && <Acc title="Beheer (facilitator)">
           <Field single type="password" label="Beheercode" value={code} onChange={setCode} />
+          {isBeheer ? (
+            <p className="text-sm font-semibold" style={{ color: NAVY }}>Je bent beheerder. Op het tabblad Pitch zie je de resultaten van alle teams.</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm" style={{ color: MUTE }}>Als beheerder zie je de resultaten van alle teams en kun je van team wisselen.</p>
+              <button disabled={!code} onClick={activeer} className="rounded-md border px-3 py-2 font-medium" style={{ borderColor: code ? NAVY : LINE, color: code ? NAVY : MUTE }}>Beheerder worden</button>
+            </div>
+          )}
+          <p className="text-sm" style={{ color: MUTE }}>Alles wissen verwijdert alle teamgegevens, acties en inschrijvingen, voor iedereen. Gebruik dit alleen na een test of aan het einde.</p>
           {!sure ? (
             <button disabled={!code} onClick={() => { setSure(true); setMsg(""); }} className="rounded-md border px-3 py-2 font-medium" style={{ borderColor: code ? RED : LINE, color: code ? RED : MUTE }}>Alles wissen</button>
           ) : (
@@ -251,6 +274,7 @@ function Kansen({ team, readOnly }) {
   const [err, setErr] = useState("");
   const [status, save] = useSaver();
   const saver = useRef(null);
+  const [wanted, setWanted] = useState(MIN_KANSEN);
   const load = useCallback(async () => {
     setErr("");
     try {
@@ -270,11 +294,14 @@ function Kansen({ team, readOnly }) {
     const sv = saver.current;
     save(`k${i}`, () => sv.save(i, kansPayload(team, i, next[i])));
   };
+  // Altijd 3 kaartjes, plus alle tot en met de laatst ingevulde, plus wat het team erbij vraagt
+  const lastFilled = rows.reduce((m, r, i) => (r.klant || r.kans || r.agent || r.human ? i + 1 : m), 0);
+  const shown = Math.min(MAX_KANSEN, Math.max(MIN_KANSEN, lastFilled, readOnly ? 0 : wanted));
   return (
     <div className={readOnly ? "grid md:grid-cols-3 gap-3 items-start" : "p-4 space-y-4"}>
       {!readOnly && (
         <>
-          <PageTitle title="Kansen bij onze klanten" sub="Kies drie klanten of prospects. Bedenk bij elke klant een kans voor AI, Copilot of een agent." />
+          <PageTitle title="Kansen bij onze klanten" sub="Kies minstens drie klanten of prospects. Bedenk bij elke klant een kans voor AI, Copilot of een agent." />
           <Acc title="Zoekvragen">
             <ul className="list-disc pl-5 space-y-1">
               <li>Waar doen mensen nu veel handmatig werk?</li>
@@ -288,25 +315,57 @@ function Kansen({ team, readOnly }) {
           <p className="text-sm" style={{ color: MUTE }}>Tip: laat een teamlid voor het hele team invullen. Wijzigingen van teamgenoten zie je na Vernieuwen.</p>
         </>
       )}
-      {rows.map((r, i) => (
+      {rows.slice(0, shown).map((r, i) => (
         <section key={i} className="border rounded-lg bg-white p-4 space-y-3" style={{ borderColor: LINE, borderTop: `4px solid ${NAVY}` }}>
           <div className="font-bold text-lg" style={{ color: NAVY }}>
             {readOnly ? (r.klant || `Klant ${i + 1}`) : `Klant ${i + 1}`}
           </div>
           {!readOnly && <Field single label="Klant of prospect" value={r.klant} onChange={(v) => upd(i, "klant", v)} placeholder="Naam of codenaam" />}
+          {readOnly && !r.kans && !r.agent && !r.human && <div className="text-sm" style={{ color: MUTE }}>Nog niet ingevuld</div>}
           <Field label="Kans: wat gaan we doen?" value={r.kans} onChange={(v) => upd(i, "kans", v)} readOnly={readOnly} placeholder="Bijv. leads automatisch kwalificeren en opvolgen" />
           <Field label="De agent doet ..." value={r.agent} onChange={(v) => upd(i, "agent", v)} readOnly={readOnly} />
           <Field label="De human beslist ..." value={r.human} onChange={(v) => upd(i, "human", v)} readOnly={readOnly} />
         </section>
       ))}
+      {!readOnly && shown < MAX_KANSEN && (
+        <button onClick={() => setWanted(shown + 1)} className="w-full rounded-md border border-dashed py-2 font-semibold" style={{ borderColor: NAVY, color: NAVY }}>
+          + Nog een klant
+        </button>
+      )}
     </div>
   );
 }
 
 /* ---------- opdracht 2: rol ---------- */
-function Matrix({ assign, custom }) {
-  const tasks = [...TASKS];
-  if (custom && custom.t) tasks.push({ id: 15, fase: custom.fase || "Build", t: custom.t });
+/* Pitchoverzicht: per niveau de taken voluit, zodat het team de keuzes kan toelichten */
+function TaakLijst({ assign, customs }) {
+  const tasks = allTasks(customs);
+  const open = tasks.filter((t) => !assign[t.id]);
+  const groep = (titel, lijst, kleur) => (
+    <section key={titel} className="border rounded-lg bg-white p-3" style={{ borderColor: LINE, borderTop: `4px solid ${kleur}` }}>
+      <div className="font-bold" style={{ color: NAVY }}>{titel} ({lijst.length})</div>
+      {lijst.length === 0 ? <div className="text-sm mt-1" style={{ color: MUTE }}>Geen taken</div> : (
+        <ul className="mt-2 space-y-1">
+          {lijst.map((t) => (
+            <li key={t.id} className="flex gap-2 items-start text-sm">
+              <span className="flex-none rounded px-1.5 text-white font-bold" style={{ background: PH[t.fase].color }}>{t.id}</span>
+              <span><b style={{ color: PH[t.fase].color }}>{t.fase}</b> {t.t}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+  return (
+    <div className="grid md:grid-cols-3 gap-3 items-start">
+      {LEVELS.map((l) => groep(l.label, tasks.filter((t) => assign[t.id] === l.id), NAVY))}
+      {open.length > 0 && <div className="md:col-span-3">{groep("Nog niet ingedeeld", open, LINE)}</div>}
+    </div>
+  );
+}
+
+function Matrix({ assign, customs }) {
+  const tasks = allTasks(customs);
   return (
     <div className="overflow-x-auto">
       <div className="grid gap-1" style={{ minWidth: 560, gridTemplateColumns: "92px repeat(5, 1fr)" }}>
@@ -336,6 +395,7 @@ function Rol({ team, readOnly }) {
   const [err, setErr] = useState("");
   const [status, save] = useSaver();
   const savers = useRef(null);
+  const [wanted, setWanted] = useState(1);
   const load = useCallback(async () => {
     setErr("");
     try {
@@ -354,7 +414,12 @@ function Rol({ team, readOnly }) {
   /* Elke taak en elk van-naar-blok is een eigen rij in SharePoint */
   const saveTaak = (nr, next) => {
     const { tw } = savers.current;
-    save(`t${nr}`, () => tw.save(nr, toewijzingPayload(team, nr, next.assign[nr], next.custom)));
+    save(`t${nr}`, () => tw.save(nr, toewijzingPayload(team, nr, next.assign[nr], next.customs[nr])));
+  };
+  const updateCustom = (nr, patch) => {
+    const next = { ...d, customs: { ...d.customs, [nr]: { ...d.customs[nr], ...patch } } };
+    setD(next);
+    saveTaak(nr, next);
   };
   const saveVanNaar = (doel, next) => {
     const { vn } = savers.current;
@@ -364,7 +429,6 @@ function Rol({ team, readOnly }) {
   const update = (patch) => {
     const next = { ...d, ...patch };
     setD(next);
-    if ("custom" in patch) saveTaak(15, next);
     if ("cv" in patch || "cn" in patch) saveVanNaar("Consultants", next);
     if ("dv" in patch || "dn" in patch) saveVanNaar("Developers", next);
     return next;
@@ -376,8 +440,12 @@ function Rol({ team, readOnly }) {
     setD(next);
     saveTaak(id, next);
   };
-  const sorted = TASKS.filter((t) => d.assign[t.id]).length + (d.custom.t && d.assign[15] ? 1 : 0);
-  const total = TASKS.length + (d.custom.t ? 1 : 0);
+  const tasks = allTasks(d.customs);
+  const sorted = tasks.filter((t) => d.assign[t.id]).length;
+  const total = tasks.length;
+  // Toon alle eigen taken tot en met de laatst ingevulde, plus wat het team erbij vraagt
+  const lastFilled = EIGEN_TAKEN.reduce((m, nr, i) => (d.customs[nr].t ? i + 1 : m), 0);
+  const shown = Math.min(EIGEN_TAKEN.length, Math.max(1, lastFilled, wanted));
 
   const vanNaar = (title, kv, kn) => (
     <section className="border rounded-lg bg-white p-4 space-y-3" style={{ borderColor: LINE, borderTop: `4px solid ${RED}` }}>
@@ -390,7 +458,9 @@ function Rol({ team, readOnly }) {
   if (readOnly) {
     return (
       <div className="space-y-3">
-        <Matrix assign={d.assign} custom={d.custom} />
+        <Matrix assign={d.assign} customs={d.customs} />
+        <div className="text-sm font-medium" style={{ color: MUTE }}>{sorted} van {total} taken ingedeeld</div>
+        <TaakLijst assign={d.assign} customs={d.customs} />
         <div className="grid md:grid-cols-2 gap-3">
           {vanNaar("Van ... naar ... voor consultants", "cv", "cn")}
           {vanNaar("Van ... naar ... voor developers", "dv", "dn")}
@@ -438,25 +508,36 @@ function Rol({ team, readOnly }) {
             {levelButtons(t.id)}
           </li>
         ))}
-        <li className="border rounded-lg bg-white p-3 space-y-2" style={{ borderColor: LINE, borderLeft: `6px solid ${PH[d.custom.fase].color}` }}>
-          <Field single label="15. Eigen taak (optioneel)" value={d.custom.t} onChange={(v) => update({ custom: { ...d.custom, t: v } })} placeholder="Een taak die jullie missen" />
-          {d.custom.t && (
-            <>
-              <div className="flex flex-wrap gap-2">
-                {PHASES.map((p) => (
-                  <button key={p.id} onClick={() => update({ custom: { ...d.custom, fase: p.id } })} aria-pressed={d.custom.fase === p.id}
-                    className="rounded-full px-3 py-1 text-sm font-semibold border"
-                    style={{ borderColor: p.color, background: d.custom.fase === p.id ? p.color : "#fff", color: d.custom.fase === p.id ? "#fff" : p.color }}>{p.id}</button>
-                ))}
-              </div>
-              {levelButtons(15)}
-            </>
-          )}
-        </li>
+        {EIGEN_TAKEN.slice(0, shown).map((nr) => {
+          const c = d.customs[nr];
+          const fase = PH[c.fase] ? c.fase : "Build";
+          return (
+            <li key={nr} className="border rounded-lg bg-white p-3 space-y-2" style={{ borderColor: LINE, borderLeft: `6px solid ${PH[fase].color}` }}>
+              <Field single label={`${nr}. Eigen taak (optioneel)`} value={c.t} onChange={(v) => updateCustom(nr, { t: v })} placeholder="Een taak die jullie missen" />
+              {c.t && (
+                <>
+                  <div className="flex flex-wrap gap-2">
+                    {PHASES.map((p) => (
+                      <button key={p.id} onClick={() => updateCustom(nr, { fase: p.id })} aria-pressed={fase === p.id}
+                        className="rounded-full px-3 py-1 text-sm font-semibold border"
+                        style={{ borderColor: p.color, background: fase === p.id ? p.color : "#fff", color: fase === p.id ? "#fff" : p.color }}>{p.id}</button>
+                    ))}
+                  </div>
+                  {levelButtons(nr)}
+                </>
+              )}
+            </li>
+          );
+        })}
       </ul>
+      {shown < EIGEN_TAKEN.length && (
+        <button onClick={() => setWanted(shown + 1)} className="w-full rounded-md border border-dashed py-2 font-semibold" style={{ borderColor: NAVY, color: NAVY }}>
+          + Nog een eigen taak
+        </button>
+      )}
 
       <h2 className="text-lg font-bold" style={{ color: NAVY }}>Jullie overzicht</h2>
-      <Matrix assign={d.assign} custom={d.custom} />
+      <Matrix assign={d.assign} customs={d.customs} />
 
       <Acc title="Bespreekvragen" defaultOpen>
         <ul className="list-disc pl-5 space-y-1">
@@ -473,8 +554,43 @@ function Rol({ team, readOnly }) {
   );
 }
 
-/* ---------- opdracht 3: gezamenlijke actiemuur ---------- */
-function Acties({ me, upn }) {
+/* ---------- opdracht 3: actiemuur van het team ---------- */
+function ActieKolommen({ items, onRemove }) {
+  return (
+    <div className="grid md:grid-cols-3 gap-3 items-start">
+      {COLS.map((c) => {
+        const list = items.filter((i) => i.kolom === c);
+        return (
+          <div key={c} className="rounded-lg overflow-hidden border bg-white" style={{ borderColor: LINE }}>
+            <div className="px-3 py-2 text-white" style={{ background: COL_COLOR[c] }}>
+              <div className="text-lg font-bold">{c}</div>
+              <div className="text-sm">{COL_HINT[c]}</div>
+            </div>
+            <div className="p-2 space-y-2" style={{ background: PAPER }}>
+              {list.length === 0 && <div className="text-sm p-2" style={{ color: MUTE }}>{onRemove ? "Nog geen acties. Zet de eerste neer." : "Nog geen acties"}</div>}
+              {list.map((i) => (
+                <div key={i.id} className="rounded-md bg-white border p-3" style={{ borderColor: LINE }}>
+                  <div className="whitespace-pre-wrap">{i.actie}</div>
+                  {(i.klant || i.datum) && (
+                    <div className="text-sm mt-1" style={{ color: MUTE }}>{i.klant && `Klant: ${i.klant}`}{i.klant && i.datum ? ", " : ""}{i.datum && `voor ${i.datum}`}</div>
+                  )}
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-sm font-semibold" style={{ color: NAVY }}>{i.naam} (team {i.team})</span>
+                    {onRemove && i.eigen && (
+                      <button onClick={() => onRemove(i)} aria-label="Verwijder deze actie" style={{ color: MUTE }}><Trash2 size={16} /></button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Acties({ me, upn, isBeheer }) {
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
   const [naam, setNaam] = useState(me.naam);
@@ -529,7 +645,20 @@ function Acties({ me, upn }) {
 
   return (
     <div className="p-4 space-y-4">
-      <PageTitle title="Mijn acties" sub="Zet minstens een eigen actie op de actiemuur. Iedereen ziet hem direct." />
+      <PageTitle title="Mijn acties" sub="Bepaal samen wat jullie gaan doen en voeg voor 30 dagen, 90 dagen en volgend jaar minimaal één actie toe." />
+      {items && (
+        <div className="flex flex-wrap gap-2">
+          {COLS.map((c) => {
+            const ok = items.some((i) => i.team === me.team && i.kolom === c);
+            return (
+              <span key={c} className="rounded-full px-3 py-1 text-sm font-semibold border flex items-center gap-1"
+                style={{ borderColor: COL_COLOR[c], background: ok ? COL_COLOR[c] : "#fff", color: ok ? "#fff" : COL_COLOR[c] }}>
+                {ok && <Check size={14} />}{c}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       <section className="border rounded-lg bg-white p-4 space-y-3" style={{ borderColor: LINE, borderTop: `4px solid ${RED}` }}>
         <Field single label="Je naam" value={naam} onChange={setNaam} />
@@ -543,52 +672,21 @@ function Acties({ me, upn }) {
           </div>
           <div className="text-sm mt-1" style={{ color: MUTE }}>{COL_HINT[kolom]}</div>
         </div>
-        <Field label="Maandag ga ik ..." value={actie} onChange={setActie} placeholder="Bijv. een Copilot Studio-agent uitproberen op onze eigen kennisbank" />
+        <Field label="Actie" value={actie} onChange={setActie} placeholder="Bijv. een Copilot Studio-agent uitproberen op onze eigen kennisbank" />
         <Field single label="Ik bespreek dit met (klant of contact, optioneel)" value={klant} onChange={setKlant} />
         <Field single label="Voor (datum, optioneel)" value={datum} onChange={setDatum} placeholder="Bijv. 12 november" />
         <button onClick={add} disabled={adding} className="w-full rounded-md py-3 text-white font-bold text-base" style={{ background: adding ? "#98A2B3" : NAVY }}>Zet op de actiemuur</button>
         {msg && <div className="text-sm" style={{ color: MUTE }}>{msg}</div>}
-        <p className="text-sm" style={{ color: MUTE }}>Wat je invult is zichtbaar voor alle deelnemers.</p>
+        <p className="text-sm" style={{ color: MUTE }}>Wat je invult is zichtbaar voor je eigen team en de facilitator.</p>
       </section>
 
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold" style={{ color: NAVY }}>Actiemuur{items ? ` (${items.length})` : ""}</h2>
+        <h2 className="text-lg font-bold" style={{ color: NAVY }}>{isBeheer ? "Actiemuur alle teams" : `Actiemuur team ${me.team}`}{items ? ` (${items.length})` : ""}</h2>
         <button onClick={load} className="flex items-center gap-1 text-sm" style={{ color: MUTE }}><RefreshCw size={14} className={busy ? "animate-spin" : ""} />Vernieuwen</button>
       </div>
 
       {loadErr && <div className="text-sm" style={{ color: RED }}>{loadErr}</div>}
-      {!items ? <div style={{ color: MUTE }}>{loadErr ? "" : "Laden..."}</div> : (
-        <div className="grid md:grid-cols-3 gap-3 items-start">
-          {COLS.map((c) => {
-            const list = items.filter((i) => i.kolom === c);
-            return (
-              <div key={c} className="rounded-lg overflow-hidden border bg-white" style={{ borderColor: LINE }}>
-                <div className="px-3 py-2 text-white" style={{ background: COL_COLOR[c] }}>
-                  <div className="text-lg font-bold">{c}</div>
-                  <div className="text-sm">{COL_HINT[c]}</div>
-                </div>
-                <div className="p-2 space-y-2" style={{ background: PAPER }}>
-                  {list.length === 0 && <div className="text-sm p-2" style={{ color: MUTE }}>Nog geen acties. Zet de eerste neer.</div>}
-                  {list.map((i) => (
-                    <div key={i.id} className="rounded-md bg-white border p-3" style={{ borderColor: LINE }}>
-                      <div className="whitespace-pre-wrap">{i.actie}</div>
-                      {(i.klant || i.datum) && (
-                        <div className="text-sm mt-1" style={{ color: MUTE }}>{i.klant && `Klant: ${i.klant}`}{i.klant && i.datum ? ", " : ""}{i.datum && `voor ${i.datum}`}</div>
-                      )}
-                      <div className="flex items-center justify-between mt-2">
-                        <span className="text-sm font-semibold" style={{ color: NAVY }}>{i.naam} (team {i.team})</span>
-                        {i.eigen && (
-                          <button onClick={() => remove(i)} aria-label="Verwijder deze actie" style={{ color: MUTE }}><Trash2 size={16} /></button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {!items ? <div style={{ color: MUTE }}>{loadErr ? "" : "Laden..."}</div> : <ActieKolommen items={items} onRemove={remove} />}
 
       <div>
         <button onClick={() => setExp(!exp)} className="flex items-center gap-1 text-sm font-medium" style={{ color: NAVY }}><Download size={14} />{exp ? "Verberg tekstversie" : "Toon tekstversie voor backlog of CRM"}</button>
@@ -600,32 +698,61 @@ function Acties({ me, upn }) {
   );
 }
 
-/* ---------- pitch: teamscherm ---------- */
-function Pitch({ me }) {
+/* ---------- pitch: resultaten van het team ---------- */
+function TeamActies({ team }) {
+  const [items, setItems] = useState(null);
+  const [err, setErr] = useState("");
+  const load = useCallback(async () => {
+    setErr("");
+    try { setItems((await loadActies()).filter((i) => i.team === team)); } catch (e) { setErr(e.message); }
+  }, [team]);
+  useEffect(() => { load(); }, [load]);
+  if (err && !items) return <LoadError msg={err} retry={load} />;
+  if (!items) return <div style={{ color: MUTE }}>Laden...</div>;
+  return <ActieKolommen items={items} />;
+}
+
+function Pitch({ me, isBeheer }) {
   const [t, setT] = useState(me.team);
   const [n, setN] = useState(0);
+  // Een deelnemer ziet alleen het eigen team; de database dwingt dit ook af
+  const team = isBeheer ? t : me.team;
+  const kop = (nr, titel) => (
+    <h2 className="text-lg font-bold flex items-center gap-2" style={{ color: NAVY }}>
+      <span className="flex-none w-7 h-7 rounded-full flex items-center justify-center text-white text-base" style={{ background: RED }}>{nr}</span>{titel}
+    </h2>
+  );
   return (
     <div className="p-4 space-y-4">
-      <PageTitle title="Pitch" sub="Kies een team en toon het overzicht op het grote scherm." />
-      <div className="flex gap-2 flex-wrap">
-        {[1, 2, 3, 4, 5].map((n) => (
-          <button key={n} onClick={() => setT(n)} aria-pressed={t === n} className="rounded-full px-4 py-2 font-semibold border"
-            style={{ borderColor: NAVY, background: t === n ? NAVY : "#fff", color: t === n ? "#fff" : NAVY }}>Team {n}</button>
-        ))}
-      </div>
+      <PageTitle title={isBeheer ? "Pitch: alle teams" : `Pitch: team ${me.team}`}
+        sub={isBeheer ? "Beheerweergave. Kies een team en toon het overzicht op het grote scherm." : "Alles wat jullie team heeft ingevuld. Gebruik dit om de pitch voor te bereiden en op het grote scherm te tonen."} />
+      {isBeheer && (
+        <>
+          <div className="rounded-md px-3 py-2 text-sm font-semibold text-white" style={{ background: NAVY }}>Beheerweergave: je ziet de resultaten van alle teams</div>
+          <div className="flex gap-2 flex-wrap">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button key={n} onClick={() => setT(n)} aria-pressed={t === n} className="rounded-full px-4 py-2 font-semibold border"
+                style={{ borderColor: NAVY, background: t === n ? NAVY : "#fff", color: t === n ? "#fff" : NAVY }}>Team {n}</button>
+            ))}
+          </div>
+        </>
+      )}
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold" style={{ color: NAVY }}>Team {t}</h2>
+        <h2 className="text-xl font-bold" style={{ color: NAVY }}>Team {team}</h2>
         <button onClick={() => setN(n + 1)} className="flex items-center gap-1 text-sm" style={{ color: MUTE }}><RefreshCw size={14} />Vernieuwen</button>
       </div>
-      <Kansen key={`k${t}-${n}`} team={t} readOnly />
-      <h2 className="text-lg font-bold" style={{ color: NAVY }}>Onze rol: van ... naar ...</h2>
-      <Rol key={`r${t}-${n}`} team={t} readOnly />
+      {kop(1, "Kansen bij onze klanten")}
+      <Kansen key={`k${team}-${n}`} team={team} readOnly />
+      {kop(2, "Onze rol")}
+      <Rol key={`r${team}-${n}`} team={team} readOnly />
+      {kop(3, "Acties")}
+      <TeamActies key={`a${team}-${n}`} team={team} />
     </div>
   );
 }
 
 /* ---------- inschrijven ---------- */
-function Setup({ initial, nieuw, onDone, busy, error }) {
+function Setup({ initial, nieuw, magTeam, onDone, busy, error }) {
   const [team, setTeam] = useState(initial ? initial.team : null);
   const [naam, setNaam] = useState(initial ? initial.naam : "");
   const [email, setEmail] = useState(initial?.email || "");
@@ -645,10 +772,11 @@ function Setup({ initial, nieuw, onDone, busy, error }) {
           <div className="font-semibold mb-2">In welk team zit je?</div>
           <div className="grid grid-cols-5 gap-2">
             {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} onClick={() => setTeam(n)} aria-pressed={team === n} className="rounded-md py-3 text-lg font-bold border"
-                style={{ borderColor: NAVY, background: team === n ? NAVY : "#fff", color: team === n ? "#fff" : NAVY }}>{n}</button>
+              <button key={n} onClick={() => setTeam(n)} disabled={!magTeam && team !== n} aria-pressed={team === n} className="rounded-md py-3 text-lg font-bold border"
+                style={{ borderColor: magTeam || team === n ? NAVY : LINE, background: team === n ? NAVY : "#fff", color: team === n ? "#fff" : magTeam ? NAVY : LINE }}>{n}</button>
             ))}
           </div>
+          {!magTeam && <p className="text-sm mt-1" style={{ color: MUTE }}>Verkeerd team? Van team wisselen kan alleen via de facilitator.</p>}
         </div>
         <Field single label="Je naam" value={naam} onChange={setNaam} placeholder="Voornaam" />
         <Field single type="email" label="Je e-mailadres (optioneel)" value={email} onChange={setEmail} placeholder="naam@cegeka.com" />
@@ -659,7 +787,7 @@ function Setup({ initial, nieuw, onDone, busy, error }) {
         </button>
         {error && <p className="text-sm" style={{ color: RED }}>{error}</p>}
         <p className="text-sm" style={{ color: MUTE }}>
-          Wat je invult in deze app is zichtbaar voor alle deelnemers. Gebruik voor klanten zo nodig een codenaam.
+          Wat je invult in deze app is zichtbaar voor je eigen team en de facilitator. Gebruik voor klanten zo nodig een codenaam.
         </p>
       </div>
     </div>
@@ -704,12 +832,12 @@ export default function App() {
     setBusy(true); setError("");
     try {
       const id = await saveDeelnemer(me?.id ?? null, m.email, m.naam, m.team, m.code);
-      const next = { id, naam: m.naam, team: m.team, email: m.email, upn: m.email };
+      const next = { id, naam: m.naam, team: m.team, email: m.email, upn: m.email, beheerder: !!me?.beheerder };
       setUser({ upn: m.email, fullName: m.naam });
       setMe(next); writeCache(next); setEditing(false);
     } catch (e) {
-      setError(e.message === "Onjuiste eventcode"
-        ? "Deze eventcode klopt niet. Vraag de facilitator om de code."
+      setError(e.message === "Onjuiste eventcode" ? "Deze eventcode klopt niet. Vraag de facilitator om de code."
+        : e.message === "Team wijzigen niet toegestaan" ? "Van team wisselen kan alleen via de facilitator."
         : "Opslaan is niet gelukt. Controleer je verbinding en probeer het opnieuw.");
     }
     setBusy(false);
@@ -718,10 +846,13 @@ export default function App() {
   if (!ready) return <div className="p-6" style={FONT}>Laden...</div>;
   if (!me || editing) {
     const initial = me || (user.fullName ? { team: null, naam: user.fullName.split(" ")[0] } : null);
-    return <Setup initial={initial} nieuw={!me} onDone={saveMe} busy={busy} error={error} />;
+    return <Setup initial={initial} nieuw={!me} magTeam={!me || !!me.beheerder} onDone={saveMe} busy={busy} error={error} />;
   }
-  // Beheer staat alleen in beeld met ?beheer in de link; de database controleert de beheercode
-  const isBeheer = new URLSearchParams(window.location.search).has("beheer");
+  // Beheerder: vastgelegd in de database na invoer van de beheercode
+  const isBeheer = !!me.beheerder;
+  // Het beheerblok staat in beeld voor beheerders en met ?beheer in de link
+  const showBeheer = isBeheer || new URLSearchParams(window.location.search).has("beheer");
+  const onBeheer = () => { const next = { ...me, beheerder: true }; setMe(next); writeCache(next); };
 
   return (
     <div className="min-h-screen flex flex-col" style={{ ...FONT, background: PAPER }}>
@@ -732,18 +863,18 @@ export default function App() {
             <div className="text-sm" style={{ color: "#B8C0CC" }}>CE en Power Platform</div>
           </div>
           <button onClick={() => setEditing(true)} className="text-sm text-right" style={{ color: "#D0D5DD" }} aria-label="Wijzig team of naam">
-            Team {me.team}<br />{me.naam}
+            Team {me.team}{isBeheer && " · beheerder"}<br />{me.naam}
           </button>
         </div>
         <div style={{ height: 12, background: "repeating-conic-gradient(#0B1F3A 0% 25%, #ffffff 0% 50%) 50% / 12px 12px" }} />
       </header>
 
       <main className="flex-1 w-full max-w-5xl mx-auto">
-        {tab === "start" && <Start go={setTab} isBeheer={isBeheer} />}
+        {tab === "start" && <Start go={setTab} isBeheer={isBeheer} showBeheer={showBeheer} onBeheer={onBeheer} />}
         {tab === "kansen" && <Kansen team={me.team} />}
         {tab === "rol" && <Rol team={me.team} />}
-        {tab === "acties" && <Acties me={me} upn={user.upn} />}
-        {tab === "pitch" && <Pitch me={me} />}
+        {tab === "acties" && <Acties me={me} upn={user.upn} isBeheer={isBeheer} />}
+        {tab === "pitch" && <Pitch me={me} isBeheer={isBeheer} />}
       </main>
 
       <nav className="sticky bottom-0 grid grid-cols-5 bg-white border-t" style={{ borderColor: LINE }}>

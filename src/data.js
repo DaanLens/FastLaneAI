@@ -77,25 +77,38 @@ export async function getDeelnemer() {
   const rows = check(await db.from("deelnemers").select("*").eq("id", uid), "Laden") || [];
   if (!rows.length) return null;
   const r = rows[0];
-  return { id: r.id, naam: txt(r.naam), team: Number(r.team), email: txt(r.email).toLowerCase() };
+  return { id: r.id, naam: txt(r.naam), team: Number(r.team), email: txt(r.email).toLowerCase(), beheerder: !!r.beheerder };
 }
 
 export async function saveDeelnemer(_existingId, upn, naam, team, eventcode = "") {
   await ensureSession();
   const res = await db.rpc("inschrijven", { p_code: eventcode, p_naam: naam, p_email: txt(upn).toLowerCase(), p_team: Number(team) });
-  if (res.error?.message?.includes("Onjuiste eventcode")) throw new Error("Onjuiste eventcode");
+  for (const fout of ["Onjuiste eventcode", "Team wijzigen niet toegestaan"]) {
+    if (res.error?.message?.includes(fout)) throw new Error(fout);
+  }
   return check(res, "Opslaan");
+}
+
+/* Maakt dit toestel beheerder: ziet daarna de resultaten van alle teams */
+export async function wordBeheerder(beheercode) {
+  const res = await db.rpc("beheerder_worden", { p_code: beheercode });
+  if (res.error?.message?.includes("Onjuiste beheercode")) throw new Error("onjuiste beheercode");
+  return check(res, "Beheerder worden");
 }
 
 /* ---------- kansen ---------- */
 export const kansenSaver = () => makeUpserter("kansen", "team,rij");
 
+/* Er staan altijd 3 klantkaartjes klaar; een team kan er tot 12 gebruiken */
+export const MIN_KANSEN = 3;
+export const MAX_KANSEN = 12;
+
 export async function loadKansen(team) {
   const rows = await list("kansen", team);
-  const out = [0, 1, 2].map(() => ({ id: null, klant: "", kans: "", agent: "", human: "" }));
+  const out = Array.from({ length: MAX_KANSEN }, () => ({ id: null, klant: "", kans: "", agent: "", human: "" }));
   for (const r of rows) {
     const i = Number(r.rij) - 1;
-    if (i < 0 || i > 2) continue;
+    if (i < 0 || i >= MAX_KANSEN) continue;
     out[i] = { id: r.id, klant: txt(r.klant), kans: txt(r.kans), agent: txt(r.agent_doet), human: txt(r.human_beslist) };
   }
   return out;
@@ -110,6 +123,8 @@ export function kansPayload(team, i, row) {
 
 /* ---------- onze rol ---------- */
 export const LEVEL_LABEL = { agent: "Agent", samen: "Human + Agent", human: "Human" };
+/* Taak 1-14 staan vast in App.jsx; 15-20 zijn eigen taken van het team */
+export const EIGEN_TAKEN = [15, 16, 17, 18, 19, 20];
 const LABEL_LEVEL = Object.fromEntries(Object.entries(LEVEL_LABEL).map(([k, v]) => [v, k]));
 
 export const toewijzingSaver = () => makeUpserter("toewijzingen", "team,taak_nr");
@@ -117,13 +132,14 @@ export const vanNaarSaver = () => makeUpserter("van_naar", "team,doelgroep");
 
 export async function loadRol(team) {
   const [taken, vn] = await Promise.all([list("toewijzingen", team), list("van_naar", team)]);
-  const d = { assign: {}, custom: { t: "", fase: "Build" }, cv: "", cn: "", dv: "", dn: "", ids: { taak: {}, vn: {} } };
+  const d = { assign: {}, customs: {}, cv: "", cn: "", dv: "", dn: "", ids: { taak: {}, vn: {} } };
+  for (const nr of EIGEN_TAKEN) d.customs[nr] = { t: "", fase: "Build" };
   for (const r of taken) {
     const nr = Number(r.taak_nr);
     d.ids.taak[nr] = r.id;
     const lvl = LABEL_LEVEL[txt(r.niveau)];
     if (lvl) d.assign[nr] = lvl;
-    if (nr === 15) d.custom = { t: txt(r.eigen_taak_tekst), fase: txt(r.eigen_taak_fase) || "Build" };
+    if (EIGEN_TAKEN.includes(nr)) d.customs[nr] = { t: txt(r.eigen_taak_tekst), fase: txt(r.eigen_taak_fase) || "Build" };
   }
   for (const r of vn) {
     const doel = txt(r.doelgroep);
@@ -136,7 +152,7 @@ export async function loadRol(team) {
 
 export function toewijzingPayload(team, nr, level, custom) {
   const p = { team: Number(team), taak_nr: nr, niveau: level ? LEVEL_LABEL[level] : null };
-  if (nr === 15) { p.eigen_taak_tekst = custom?.t || ""; p.eigen_taak_fase = custom?.fase || "Build"; }
+  if (EIGEN_TAKEN.includes(nr)) { p.eigen_taak_tekst = custom?.t || ""; p.eigen_taak_fase = custom?.fase || "Build"; }
   return p;
 }
 
