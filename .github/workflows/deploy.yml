@@ -24,6 +24,11 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Controleer Supabase-variabelen
+        if: ${{ vars.SUPABASE_URL == '' || vars.SUPABASE_ANON_KEY == '' }}
+        run: |
+          echo "::error::Zet SUPABASE_URL en SUPABASE_ANON_KEY onder Settings > Secrets and variables > Actions > Variables"
+          exit 1
       - run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
